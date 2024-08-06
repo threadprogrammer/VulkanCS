@@ -17,7 +17,7 @@ void main() {
     vec4 pixel = imageData[idx.y * 864 + idx.x]; // Assume 864 is the width
 
     // Invert colors (example operation)
-    pixel.rgb = 0.4 - pixel.rgb; // Here, 1.0 is used for normalization
+    pixel.rgba = 1.0 - pixel.rgba; // Here, 1.0 is used for normalization
 
     // Write the result to the output image
     outputData[idx.y * 864 + idx.x] = pixel;

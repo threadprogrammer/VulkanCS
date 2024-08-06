@@ -134,7 +134,7 @@ int main() {
 
     // Load the input image using stb_image
     int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load("input2.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load("input.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     if (!pixels) {
         throw std::runtime_error("Failed to load texture image.");
     }
@@ -339,6 +339,9 @@ int main() {
         throw std::runtime_error("Failed to submit command buffer.");
     }
     vkQueueWaitIdle(computeQueue);
+    
+    // Writing at this point by using outputBufferMemory directly, will cause a blurred image!!
+    stbi_write_png("output.png", WIDTH, HEIGHT, 4, outputBufferMemory, WIDTH * 4);
 
     // Retrieve results from output buffer
     vkMapMemory(device, outputBufferMemory, 0, VK_WHOLE_SIZE, 0, &data);
@@ -350,7 +353,7 @@ int main() {
     vkUnmapMemory(device, outputBufferMemory);
 
     // Save the output image data
-    stbi_write_png("output.png", WIDTH, HEIGHT, 4, outputData.data(), WIDTH * 4);
+    //stbi_write_png("output.png", WIDTH, HEIGHT, 4, outputData.data(), WIDTH * 4);
 
     // Cleanup
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
