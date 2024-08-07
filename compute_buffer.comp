@@ -1,0 +1,13 @@
+#version 450
+
+layout(set = 0, binding = 0) buffer InputBuffer {
+    float inputValue;
+} inputData;
+
+layout(set = 0, binding = 1) buffer OutputBuffer {
+    float outputValue;
+} outputData;
+
+void main() {
+    outputData.outputValue = inputData.inputValue * 2.0;
+}
