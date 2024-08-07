@@ -6,365 +6,392 @@
 #include <vector>
 #include <stdexcept>
 #include <fstream>
-#include <cstring>
-#include <cmath>
-
+#include <array>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
 
-
-const int WIDTH = 864;
-const int HEIGHT = 409;
-
-VkInstance instance;
-VkDevice device;
-VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-VkQueue computeQueue;
-VkCommandPool commandPool;
-VkCommandBuffer commandBuffer;
-VkPipeline computePipeline;
-VkPipelineLayout pipelineLayout;
-VkDescriptorSetLayout descriptorSetLayout;
-VkDescriptorPool descriptorPool;
-VkDescriptorSet descriptorSet;
-VkBuffer inputBuffer, outputBuffer;
-VkDeviceMemory inputBufferMemory, outputBufferMemory;
-VkImage inputImage, outputImage;
-VkDeviceMemory inputImageMemory, outputImageMemory;
-
-// Helper function to find memory type
-uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            return i;
-        }
+// Utility function to read shader code from a file
+std::vector<char> readFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("failed to open file!");
     }
+    size_t fileSize = (size_t)file.tellg();
+    std::vector<char> buffer(fileSize);
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    file.close();
+    return buffer;
+}
 
-    throw std::runtime_error("Failed to find suitable memory type.");
+// Utility function to create a shader module
+VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code) {
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shader module!");
+    }
+    return shaderModule;
 }
 
 int main() {
+    const char* inputImagePath = "input.png";
+    const char* outputImagePath = "output.png";
+
+    // Load input image using stb_image
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load(inputImagePath, &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    if (!pixels) {
+        throw std::runtime_error("failed to load texture image!");
+    }
+    VkDeviceSize imageSize = texWidth * texHeight * 4; // 4 bytes per pixel for RGBA
+
     // Initialize Vulkan
-    VkApplicationInfo appInfo = {};
+    VkInstance instance;
+    VkDevice device;
+    VkQueue computeQueue;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    uint32_t computeQueueFamilyIndex;
+
+    // Create Vulkan instance
+    VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Vulkan Compute Shader Example";
+    appInfo.pApplicationName = "Compute Shader Image Processing";
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.apiVersion = VK_API_VERSION_1_0;
 
-    VkInstanceCreateInfo createInfo = {};
+    VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
 
     if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create Vulkan instance.");
+        throw std::runtime_error("failed to create instance!");
     }
 
-    // Select physical device
+    // Pick physical device
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
     if (deviceCount == 0) {
-        throw std::runtime_error("Failed to find GPUs with Vulkan support.");
+        throw std::runtime_error("failed to find GPUs with Vulkan support!");
     }
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-    for (const auto& device : devices) {
-        VkPhysicalDeviceProperties deviceProperties;
-        vkGetPhysicalDeviceProperties(device, &deviceProperties);
-        if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-            physicalDevice = device;
+    for (const auto& dev : devices) {
+        if (true) { // You can add some physical device suitability checks here
+            physicalDevice = dev;
             break;
         }
     }
     if (physicalDevice == VK_NULL_HANDLE) {
-        throw std::runtime_error("Failed to find a suitable GPU.");
+        throw std::runtime_error("failed to find a suitable GPU!");
     }
 
-    // Create logical device and compute queue
+    // Find compute queue family
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
-    int computeQueueFamilyIndex = -1;
-    for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+    bool found = false;
+    for (uint32_t i = 0; i < queueFamilyCount; i++) {
         if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
             computeQueueFamilyIndex = i;
+            found = true;
             break;
         }
     }
-    if (computeQueueFamilyIndex == -1) {
-        throw std::runtime_error("Failed to find a compute queue family.");
+    if (!found) {
+        throw std::runtime_error("failed to find a compute queue family!");
     }
 
+    // Create logical device and retrieve the compute queue
     float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueCreateInfo = {};
+    VkDeviceQueueCreateInfo queueCreateInfo{};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queueCreateInfo.queueFamilyIndex = computeQueueFamilyIndex;
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
-    VkDeviceCreateInfo deviceCreateInfo = {};
+    VkPhysicalDeviceFeatures deviceFeatures{};
+
+    VkDeviceCreateInfo deviceCreateInfo{};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+    deviceCreateInfo.queueCreateInfoCount = 1;
+    deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
     if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create logical device.");
+        throw std::runtime_error("failed to create logical device!");
     }
-
     vkGetDeviceQueue(device, computeQueueFamilyIndex, 0, &computeQueue);
 
-    // Create command pool
-    VkCommandPoolCreateInfo poolCreateInfo = {};
-    poolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolCreateInfo.queueFamilyIndex = computeQueueFamilyIndex;
+    // Create buffers
+    VkBuffer inputBuffer, outputBuffer;
+    VkDeviceMemory inputBufferMemory, outputBufferMemory;
 
-    if (vkCreateCommandPool(device, &poolCreateInfo, nullptr, &commandPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create command pool.");
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &inputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input buffer!");
     }
 
-    // Load the input image using stb_image
-    int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load("input.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-    if (!pixels) {
-        throw std::runtime_error("Failed to load texture image.");
-    }
-
-    VkDeviceSize imageSize = texWidth * texHeight * 4;
-
-    // Create input buffer
-    VkBufferCreateInfo bufferCreateInfo = {};
-    bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferCreateInfo.size = imageSize;
-    bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &inputBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create input buffer.");
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &outputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create output buffer!");
     }
 
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(device, inputBuffer, &memRequirements);
 
-    VkMemoryAllocateInfo allocInfo = {};
+    VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    allocInfo.memoryTypeIndex = 0;
+
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if (memRequirements.memoryTypeBits & (1 << i) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            allocInfo.memoryTypeIndex = i;
+            break;
+        }
+    }
 
     if (vkAllocateMemory(device, &allocInfo, nullptr, &inputBufferMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate input buffer memory.");
+        throw std::runtime_error("failed to allocate input buffer memory!");
     }
 
     vkBindBufferMemory(device, inputBuffer, inputBufferMemory, 0);
 
-    // Map and copy input image data to the input buffer
-    void* data;
-    vkMapMemory(device, inputBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, pixels, static_cast<size_t>(imageSize));
-    vkUnmapMemory(device, inputBufferMemory);
-
-    stbi_image_free(pixels);
-
-    // Create output buffer
-    bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-    if (vkCreateBuffer(device, &bufferCreateInfo, nullptr, &outputBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create output buffer.");
-    }
-
     vkGetBufferMemoryRequirements(device, outputBuffer, &memRequirements);
-
     allocInfo.allocationSize = memRequirements.size;
 
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if (memRequirements.memoryTypeBits & (1 << i) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            allocInfo.memoryTypeIndex = i;
+            break;
+        }
+    }
+
     if (vkAllocateMemory(device, &allocInfo, nullptr, &outputBufferMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate output buffer memory.");
+        throw std::runtime_error("failed to allocate output buffer memory!");
     }
 
     vkBindBufferMemory(device, outputBuffer, outputBufferMemory, 0);
 
-    // Create and compile the compute shader
-    auto readFile = [](const std::string& filename) {
-        std::ifstream file(filename, std::ios::ate | std::ios::binary);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open file!");
-        }
-        size_t fileSize = (size_t)file.tellg();
-        std::vector<char> buffer(fileSize);
-        file.seekg(0);
-        file.read(buffer.data(), fileSize);
-        file.close();
-        return buffer;
-        };
-
-    auto shaderCode = readFile("image_shader.spv");
-
-    VkShaderModule shaderModule;
-    VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
-    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleCreateInfo.codeSize = shaderCode.size();
-    shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(shaderCode.data());
-    if (vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create shader module.");
-    }
-
-    // Create pipeline layout
-    VkPipelineShaderStageCreateInfo shaderStageInfo = {};
-    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    shaderStageInfo.module = shaderModule;
-    shaderStageInfo.pName = "main";
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pipeline layout.");
-    }
-
-    VkComputePipelineCreateInfo pipelineInfo = {};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = shaderStageInfo;
-    pipelineInfo.layout = pipelineLayout;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create compute pipeline.");
-    }
+    // Copy data to input buffer
+    void* data;
+    vkMapMemory(device, inputBufferMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(device, inputBufferMemory);
+    stbi_image_free(pixels);
 
     // Create descriptor set layout
-    VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorSetLayoutBinding uboLayoutBinding{};
     uboLayoutBinding.binding = 0;
     uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     uboLayoutBinding.descriptorCount = 1;
     uboLayoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    uboLayoutBinding.pImmutableSamplers = nullptr; // Optional
+    uboLayoutBinding.pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    std::array<VkDescriptorSetLayoutBinding, 2> bindings = { uboLayoutBinding, uboLayoutBinding };
+    bindings[1].binding = 1;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &uboLayoutBinding;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create descriptor set layout.");
+        throw std::runtime_error("failed to create descriptor set layout!");
     }
 
-    // Create descriptor pool
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 1;
+    // Create compute pipeline
+    auto shaderCode = readFile("image_shader.spv");
+    VkShaderModule computeShaderModule = createShaderModule(device, shaderCode);
 
-    VkDescriptorPoolCreateInfo poolInfo = {};
+    VkPipelineShaderStageCreateInfo shaderStageInfo{};
+    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStageInfo.module = computeShaderModule;
+    shaderStageInfo.pName = "main";
+
+    VkPipelineLayout pipelineLayout;
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create pipeline layout!");
+    }
+
+    VkPipeline computePipeline;
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = shaderStageInfo;
+    pipelineInfo.layout = pipelineLayout;
+
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create compute pipeline!");
+    }
+
+    vkDestroyShaderModule(device, computeShaderModule, nullptr);
+
+    // Create descriptor pool and set
+    VkDescriptorPool descriptorPool;
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[0].descriptorCount = 2;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount = 2;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
     poolInfo.maxSets = 1;
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create descriptor pool.");
+        throw std::runtime_error("failed to create descriptor pool!");
     }
 
-    // Create descriptor set
-    VkDescriptorSetAllocateInfo allocInfoDesc = {};
-    allocInfoDesc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfoDesc.descriptorPool = descriptorPool;
-    allocInfoDesc.descriptorSetCount = 1;
-    allocInfoDesc.pSetLayouts = &descriptorSetLayout;
+    VkDescriptorSet descriptorSet;
+    VkDescriptorSetAllocateInfo allocInfoDS{};
+    allocInfoDS.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfoDS.descriptorPool = descriptorPool;
+    allocInfoDS.descriptorSetCount = 1;
+    allocInfoDS.pSetLayouts = &descriptorSetLayout;
 
-    if (vkAllocateDescriptorSets(device, &allocInfoDesc, &descriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate descriptor set.");
+    if (vkAllocateDescriptorSets(device, &allocInfoDS, &descriptorSet) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate descriptor set!");
     }
 
-    VkDescriptorBufferInfo bufferInfo = {};
-    bufferInfo.buffer = outputBuffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = VK_WHOLE_SIZE;
+    VkDescriptorBufferInfo bufferInfoInput{};
+    bufferInfoInput.buffer = inputBuffer;
+    bufferInfoInput.offset = 0;
+    bufferInfoInput.range = imageSize;
 
-    VkWriteDescriptorSet descriptorWrite = {};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = descriptorSet;
-    descriptorWrite.dstBinding = 0;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pBufferInfo = &bufferInfo;
+    VkDescriptorBufferInfo bufferInfoOutput{};
+    bufferInfoOutput.buffer = outputBuffer;
+    bufferInfoOutput.offset = 0;
+    bufferInfoOutput.range = imageSize;
 
-    vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = descriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &bufferInfoInput;
 
-    // Allocate command buffer
-    VkCommandBufferAllocateInfo allocInfoCmd = {};
-    allocInfoCmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfoCmd.commandPool = commandPool;
-    allocInfoCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfoCmd.commandBufferCount = 1;
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = descriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pBufferInfo = &bufferInfoOutput;
 
-    if (vkAllocateCommandBuffers(device, &allocInfoCmd, &commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate command buffer.");
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+
+    // Create command buffer
+    VkCommandPool commandPool;
+    VkCommandPoolCreateInfo poolInfoCP{};
+    poolInfoCP.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfoCP.queueFamilyIndex = computeQueueFamilyIndex;
+
+    if (vkCreateCommandPool(device, &poolInfoCP, nullptr, &commandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create command pool!");
     }
 
-    // Begin recording to the command buffer
-    VkCommandBufferBeginInfo beginInfo = {};
+    VkCommandBuffer commandBuffer;
+    VkCommandBufferAllocateInfo allocInfoCB{};
+    allocInfoCB.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfoCB.commandPool = commandPool;
+    allocInfoCB.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfoCB.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(device, &allocInfoCB, &commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer!");
+    }
+
+    // Record command buffer
+    VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to begin recording command buffer.");
+        throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-    // Bind compute pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-
-    // Bind descriptor sets
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, static_cast<uint32_t>(texWidth / 16), static_cast<uint32_t>(texHeight / 16), 1);
 
-    // Dispatch compute shader
-    vkCmdDispatch(commandBuffer, (uint32_t)ceil(WIDTH / 16.0), (uint32_t)ceil(HEIGHT / 16.0), 1);
-
-    // End recording
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to record command buffer.");
+        throw std::runtime_error("failed to record command buffer!");
     }
 
-    // Submit command buffer to queue
-    VkSubmitInfo submitInfo = {};
+    // Submit and wait for completion
+    VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to submit command buffer.");
+    VkFence fence;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create fence!");
     }
-    vkQueueWaitIdle(computeQueue);
-    
-    // Writing at this point by using outputBufferMemory directly, will cause a blurred image!!
-    stbi_write_png("output.png", WIDTH, HEIGHT, 4, outputBufferMemory, WIDTH * 4);
 
-    // Retrieve results from output buffer
-    vkMapMemory(device, outputBufferMemory, 0, VK_WHOLE_SIZE, 0, &data);
+    if (vkQueueSubmit(computeQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
+        throw std::runtime_error("failed to submit compute work!");
+    }
 
-    // Assuming the output buffer contains data in RGBA format
-    std::vector<uint8_t> outputData(WIDTH * HEIGHT * 4);
-    memcpy(outputData.data(), data, outputData.size());
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
+    // Retrieve output data
+    vkMapMemory(device, outputBufferMemory, 0, imageSize, 0, &data);
+    std::vector<stbi_uc> outputPixels(imageSize);
+    memcpy(outputPixels.data(), data, static_cast<size_t>(imageSize));
     vkUnmapMemory(device, outputBufferMemory);
 
-    // Save the output image data
-    //stbi_write_png("output.png", WIDTH, HEIGHT, 4, outputData.data(), WIDTH * 4);
+    // Save output image using stb_image_write
+    stbi_write_png(outputImagePath, texWidth, texHeight, STBI_rgb_alpha, outputPixels.data(), texWidth * 4);
 
     // Cleanup
+    vkDestroyFence(device, fence, nullptr);
+    vkDestroyCommandPool(device, commandPool, nullptr);
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
     vkDestroyPipeline(device, computePipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
     vkDestroyBuffer(device, outputBuffer, nullptr);
-    vkFreeMemory(device, outputBufferMemory, nullptr);
     vkDestroyBuffer(device, inputBuffer, nullptr);
+    vkFreeMemory(device, outputBufferMemory, nullptr);
     vkFreeMemory(device, inputBufferMemory, nullptr);
-    vkDestroyCommandPool(device, commandPool, nullptr);
     vkDestroyDevice(device, nullptr);
     vkDestroyInstance(instance, nullptr);
 

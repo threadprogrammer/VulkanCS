@@ -1,24 +1,16 @@
 #version 450
 
-layout(set = 0, binding = 0) buffer InputImage {
-    vec4 imageData[];
-};
+layout(set = 0, binding = 0) buffer InputBuffer {
+    vec4 pixels[];
+} inputImage;
 
-layout(set = 0, binding = 1) buffer OutputImage {
-    vec4 outputData[];
-};
+layout(set = 0, binding = 1) buffer OutputBuffer {
+    vec4 pixels[];
+} outputImage;
 
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 void main() {
-    uvec2 idx = gl_GlobalInvocationID.xy;
-
-    // Access the input image data
-    vec4 pixel = imageData[idx.y * 864 + idx.x]; // Assume 864 is the width
-
-    // Invert colors (example operation)
-    pixel.rgba = 1.0 - pixel.rgba; // Here, 1.0 is used for normalization
-
-    // Write the result to the output image
-    outputData[idx.y * 864 + idx.x] = pixel;
+    uint index = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * 16 + gl_GlobalInvocationID.x;
+    outputImage.pixels[index] = inputImage.pixels[index] * 2.0;
 }
