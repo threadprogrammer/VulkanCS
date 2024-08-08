@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <cstring>
+
 VkDescriptorPool createDescriptorPool(VkDevice device) {
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -56,6 +57,7 @@ VkDescriptorSet createDescriptorSet(VkDevice device, VkDescriptorPool descriptor
 
     return descriptorSet;
 }
+
 VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayout, VkShaderModule computeShaderModule) {
     VkPipelineShaderStageCreateInfo shaderStageInfo{};
     shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -72,6 +74,7 @@ VkPipeline createComputePipeline(VkDevice device, VkPipelineLayout pipelineLayou
     vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline);
     return computePipeline;
 }
+
 VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout) {
     VkPipelineLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -82,6 +85,7 @@ VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout des
     vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout);
     return pipelineLayout;
 }
+
 VkDescriptorSetLayout createDescriptorSetLayout(VkDevice device) {
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
@@ -237,7 +241,7 @@ std::vector<char> readFile(const std::string& filename) {
 }
 
 int main() {
-   
+
 
     VkInstance instance;
     VkApplicationInfo appInfo{};
@@ -437,7 +441,7 @@ int main() {
     VkBuffer stagingBufferResult;
     VkDeviceMemory stagingBufferMemoryResult;
     createBuffer(device, physicalDevice, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBufferResult, stagingBufferMemoryResult);
-    
+
     VkCommandBuffer copyCommandBuffer = beginSingleTimeCommands(device, commandPool);
 
     VkImageMemoryBarrier resultBarrier{};
