@@ -1,430 +1,553 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include <vulkan/vulkan.h>
-#include <iostream>
-#include <vector>
-#include <fstream>
-#include <stdexcept>
-#include <cstring>
-
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+
+#include <vulkan/vulkan.h>
+#include "stb_image.h"
 #include "stb_image_write.h"
 
-// Function to read shader code from file
-std::vector<uint32_t> readShaderCode(const std::string& filename) {
-    std::ifstream file(filename, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) throw std::runtime_error("Failed to open file");
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <stdexcept>
 
-    std::ifstream::pos_type fileSize = file.tellg();
-    std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
-    file.close();
+const char* shaderCode = R"(
+#version 450
 
-    return buffer;
+layout(binding = 0) uniform sampler2D inputImage;
+layout(binding = 1) writeonly uniform image2D outputImage;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    vec4 color = texelFetch(inputImage, pos, 0);
+    imageStore(outputImage, pos, color);
 }
+)";
 
-bool loadImage(const std::string& filename, int& width, int& height, int& channels, unsigned char*& data) {
-    data = stbi_load(filename.c_str(), &width, &height, &channels, STBI_rgb_alpha); // Force 4 channels (RGBA)
-    if (!data) {
-        std::cerr << "Failed to load image: " << stbi_failure_reason() << std::endl;
-        return false;
+// Helper function to load shader from string
+VkShaderModule createShaderModule(VkDevice device, const char* code, size_t codeSize) {
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = codeSize;
+    std::vector<uint32_t> codeBuffer((uint32_t*)code, (uint32_t*)(code + codeSize));
+    createInfo.pCode = codeBuffer.data();
+
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shader module");
     }
-    return true;
+    return shaderModule;
+}
+
+uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties, VkPhysicalDevice physicalDevice) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    throw std::runtime_error("failed to find suitable memory type!");
 }
 
 
-
-// Initialize Vulkan instance, device, and other necessary components
-void initVulkan(VkInstance& instance, VkDevice& device, VkQueue& computeQueue, VkCommandPool& commandPool, VkPipelineLayout& pipelineLayout, VkPipeline& computePipeline, VkDescriptorSetLayout& descriptorSetLayout) {
-    // Create Vulkan instance
-    VkApplicationInfo appInfo = {};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Vulkan Compute Shader";
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_2;
-
-    VkInstanceCreateInfo instanceCreateInfo = {};
+// Main function
+int main() {
+    VkImage inputImage;
+    VkImageView inputImageView;
+    VkSampler inputSampler;
+    // Initialize Vulkan instance
+    VkInstance instance;
+    VkInstanceCreateInfo instanceCreateInfo{};
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    instanceCreateInfo.pApplicationInfo = &appInfo;
+    vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
 
-    if (vkCreateInstance(&instanceCreateInfo, nullptr, &instance) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create Vulkan instance");
-    }
-
-    // Choose physical device
-    VkPhysicalDevice physicalDevice;
-    VkPhysicalDeviceProperties deviceProperties;
-    VkPhysicalDeviceMemoryProperties deviceMemoryProperties;
+    // Select a physical device and create a logical device
     uint32_t deviceCount = 0;
-
     vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
     std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
 
-    physicalDevice = physicalDevices[0];  // Simplification: choose the first device
-
-    vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemoryProperties);
-
-    // Create logical device
-    VkDeviceQueueCreateInfo queueCreateInfo = {};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = 0;  // Simplification: choose the first queue family
-    queueCreateInfo.queueCount = 1;
+    VkPhysicalDevice physicalDevice = physicalDevices[0];
+    VkDevice device;
     float queuePriority = 1.0f;
+    VkDeviceQueueCreateInfo queueCreateInfo{};
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = 0;
+    queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
-    VkDeviceCreateInfo deviceCreateInfo = {};
+    VkDeviceCreateInfo deviceCreateInfo{};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+    vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device);
 
-    if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create logical device");
+    // Load image with stb_image
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load("input.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+    
+
+    VkBuffer inputBuffer, outputBuffer;
+    VkDeviceMemory inputMemory, outputMemory;
+    VkDeviceSize bufferSize = imageSize;
+
+    // Create the input buffer
+    VkBufferCreateInfo bufferInfoC{};
+    bufferInfoC.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfoC.size = bufferSize;
+    bufferInfoC.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfoC.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfoC, nullptr, &inputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input buffer!");
     }
 
-    vkGetDeviceQueue(device, 0, 0, &computeQueue);
+    // Get memory requirements for the input buffer
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(device, inputBuffer, &memRequirements);
 
-    // Create command pool
-    VkCommandPoolCreateInfo commandPoolCreateInfo = {};
-    commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    commandPoolCreateInfo.queueFamilyIndex = 0;  // Simplification: choose the first queue family
+    // Allocate memory for the input buffer
+    VkMemoryAllocateInfo allocInfoM{};
+    allocInfoM.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfoM.allocationSize = memRequirements.size;
+    allocInfoM.memoryTypeIndex = 0;
 
-    if (vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, &commandPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create command pool");
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            allocInfoM.memoryTypeIndex = i;
+            break;
+        }
     }
 
-    // Create descriptor set layout
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {};
-    layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.bindingCount = 1;
-    layoutCreateInfo.pBindings = &binding;
-
-    if (vkCreateDescriptorSetLayout(device, &layoutCreateInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create descriptor set layout");
+    if (vkAllocateMemory(device, &allocInfoM, nullptr, &inputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate input buffer memory!");
     }
 
-    // Create pipeline layout
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    // Bind memory to the input buffer
+    vkBindBufferMemory(device, inputBuffer, inputMemory, 0);
+
+    // Create the output buffer
+    bufferInfoC.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    if (vkCreateBuffer(device, &bufferInfoC, nullptr, &outputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create output buffer!");
+    }
+
+    // Get memory requirements for the output buffer
+    vkGetBufferMemoryRequirements(device, outputBuffer, &memRequirements);
+
+    // Allocate memory for the output buffer
+    allocInfoM.allocationSize = memRequirements.size;
+    allocInfoM.memoryTypeIndex = 0;
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            allocInfoM.memoryTypeIndex = i;
+            break;
+        }
+    }
+
+    if (vkAllocateMemory(device, &allocInfoM, nullptr, &outputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate output buffer memory!");
+    }
+
+    // Bind memory to the output buffer
+    vkBindBufferMemory(device, outputBuffer, outputMemory, 0);
+
+    // Load shader module
+    VkShaderModule shaderModule = createShaderModule(device, shaderCode, strlen(shaderCode));
+    // Create input image, input image view, and sampler
+
+// Input Image (assuming the image data has already been loaded using stb_image)
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = texWidth;
+    imageInfo.extent.height = texHeight;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateImage(device, &imageInfo, nullptr, &inputImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input image!");
+    }
+
+    vkGetImageMemoryRequirements(device, inputImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, physicalDevice);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &inputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate input image memory!");
+    }
+
+    vkBindImageMemory(device, inputImage, inputMemory, 0);
+
+    // Transition input image layout to VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and copy data
+    // (This would typically involve command buffer operations not shown here for brevity)
+
+    // Create Image View for Input Image
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = inputImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(device, &viewInfo, nullptr, &inputImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input image view!");
+    }
+
+    // Create a sampler for the input image
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+
+    if (vkCreateSampler(device, &samplerInfo, nullptr, &inputSampler) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input sampler!");
+    }
+
+    // Create output image and output image view
+
+    VkImage outputImage;
+    VkImageView outputImageView;
+
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (vkCreateImage(device, &imageInfo, nullptr, &outputImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create output image!");
+    }
+
+    vkGetImageMemoryRequirements(device, outputImage, &memRequirements);
+
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, physicalDevice);
+
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &outputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate output image memory!");
+    }
+
+    vkBindImageMemory(device, outputImage, outputMemory, 0);
+
+    // Transition output image layout to VK_IMAGE_LAYOUT_GENERAL
+    // (This would typically involve command buffer operations not shown here for brevity)
+
+    // Create Image View for Output Image
+    viewInfo.image = outputImage;
+    if (vkCreateImageView(device, &viewInfo, nullptr, &outputImageView) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create output image view!");
+    }
+
+
+    // Create descriptor sets, pipeline, etc.
+    // Allocate and bind memory for buffers
+    // Create descriptor sets, pipeline, etc.
+
+// Descriptor Set Layout
+    VkDescriptorSetLayoutBinding inputBinding{};
+    inputBinding.binding = 0;
+    inputBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    inputBinding.descriptorCount = 1;
+    inputBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    inputBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutBinding outputBinding{};
+    outputBinding.binding = 1;
+    outputBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    outputBinding.descriptorCount = 1;
+    outputBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    outputBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutBinding bindings[] = { inputBinding, outputBinding };
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor set layout!");
+    }
+
+    // Pipeline Layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
 
+    VkPipelineLayout pipelineLayout;
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create pipeline layout");
+        throw std::runtime_error("failed to create pipeline layout!");
     }
 
-    // Load and create compute shader module
-    auto shaderCode = readShaderCode("image_shader.spv");
-    VkShaderModuleCreateInfo shaderModuleCreateInfo = {};
-    shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderModuleCreateInfo.codeSize = shaderCode.size() * sizeof(uint32_t);
-    shaderModuleCreateInfo.pCode = shaderCode.data();
-
-    VkShaderModule shaderModule;
-    if (vkCreateShaderModule(device, &shaderModuleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create shader module");
-    }
-
-    // Create compute pipeline
-    VkPipelineShaderStageCreateInfo shaderStageInfo = {};
+    // Shader Stage
+    VkPipelineShaderStageCreateInfo shaderStageInfo{};
     shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     shaderStageInfo.module = shaderModule;
     shaderStageInfo.pName = "main";
 
-    VkComputePipelineCreateInfo pipelineInfo = {};
+    // Compute Pipeline
+    VkComputePipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage = shaderStageInfo;
     pipelineInfo.layout = pipelineLayout;
 
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create compute pipeline");
+    VkPipeline computePipeline;
+    auto res = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline);
+    std::cout << res << std::endl;
+    
+
+    // Descriptor Pool
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolSize poolSizeOutput{};
+    poolSizeOutput.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizeOutput.descriptorCount = 1;
+
+    VkDescriptorPoolSize poolSizes[] = { poolSize, poolSizeOutput };
+
+    VkDescriptorPoolCreateInfo poolInfoD{};
+    poolInfoD.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfoD.poolSizeCount = 2;
+    poolInfoD.pPoolSizes = poolSizes;
+    poolInfoD.maxSets = 1;
+
+    VkDescriptorPool descriptorPool;
+    if (vkCreateDescriptorPool(device, &poolInfoD, nullptr, &descriptorPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor pool!");
     }
 
-    vkDestroyShaderModule(device, shaderModule, nullptr);
-}
+    // Descriptor Sets
+    VkDescriptorSetAllocateInfo allocInfoD{};
+    allocInfoD.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfoD.descriptorPool = descriptorPool;
+    allocInfoD.descriptorSetCount = 1;
+    allocInfoD.pSetLayouts = &descriptorSetLayout;
 
-// Create input and output images
-void createImages(VkDevice device, VkImage& inputImage, VkImage& outputImage, VkDeviceMemory& inputImageMemory, VkDeviceMemory& outputImageMemory, VkImageView& inputImageView, VkImageView& outputImageView, VkFormat format, VkExtent2D extent) {
-    // Create input image
-    VkImageCreateInfo imageCreateInfo = {};
-    imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageCreateInfo.format = format;
-    imageCreateInfo.extent.width = extent.width;
-    imageCreateInfo.extent.height = extent.height;
-    imageCreateInfo.extent.depth = 1;
-    imageCreateInfo.mipLevels = 1;
-    imageCreateInfo.arrayLayers = 1;
-    imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageCreateInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    if (vkCreateImage(device, &imageCreateInfo, nullptr, &inputImage) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create input image");
+    VkDescriptorSet descriptorSet;
+    if (vkAllocateDescriptorSets(device, &allocInfoD, &descriptorSet) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate descriptor set!");
     }
 
-    if (vkCreateImage(device, &imageCreateInfo, nullptr, &outputImage) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create output image");
-    }
-
-    // Allocate memory for input image
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, inputImage, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-
-    // Find suitable memory type (omitted for brevity; use a memory type index for VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &inputImageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate input image memory");
-    }
-
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &outputImageMemory) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate output image memory");
-    }
-
-    // Bind memory to images
-    vkBindImageMemory(device, inputImage, inputImageMemory, 0);
-    vkBindImageMemory(device, outputImage, outputImageMemory, 0);
-
-    //int width, height, channels;
-    //width = 864;
-    //width = 409;
-    //channels = 4;
-    //unsigned char* imageData = nullptr;
-    //if (!loadImage("input.png", width, height, channels, imageData)) {
-    //    throw std::runtime_error("Failed to open image");
-    //}
-    //// Copy data to input buffer
-    //void* data;
-    //vkMapMemory(device, inputImageMemory, 0, sizeof(imageData), 0, &data);
-    //memcpy(data, imageData.data(), sizeof(imageData));
-    //vkUnmapMemory(device, inputImageMemory);
-
-    // Create image views
-    VkImageViewCreateInfo imageViewCreateInfo = {};
-    imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    imageViewCreateInfo.image = inputImage;
-    imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    imageViewCreateInfo.format = format;
-    imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
-    imageViewCreateInfo.subresourceRange.levelCount = 1;
-    imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-    imageViewCreateInfo.subresourceRange.layerCount = 1;
-
-    if (vkCreateImageView(device, &imageViewCreateInfo, nullptr, &inputImageView) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create input image view");
-    }
-
-    imageViewCreateInfo.image = outputImage;
-
-    if (vkCreateImageView(device, &imageViewCreateInfo, nullptr, &outputImageView) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create output image view");
-    }
-}
-
-void createDescriptorSets(VkDevice device, VkDescriptorPool& descriptorPool, VkDescriptorSetLayout descriptorSetLayout, VkDescriptorSet& descriptorSet, VkImageView inputImageView, VkImageView outputImageView) {
-    // Create descriptor pool
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSize.descriptorCount = 2;  // One for input and one for output
-
-    VkDescriptorPoolCreateInfo poolCreateInfo = {};
-    poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolCreateInfo.poolSizeCount = 1;
-    poolCreateInfo.pPoolSizes = &poolSize;
-    poolCreateInfo.maxSets = 1;
-
-    if (vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create descriptor pool");
-    }
-
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
-
-    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate descriptor set");
-    }
-
-    // Update descriptor set
-    VkDescriptorImageInfo inputImageInfo = {};
+    // Update descriptor sets
+    VkDescriptorImageInfo inputImageInfo{};
+    inputImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     inputImageInfo.imageView = inputImageView;
-    inputImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    inputImageInfo.sampler = inputSampler;
 
-    VkDescriptorImageInfo outputImageInfo = {};
-    outputImageInfo.imageView = outputImageView;
+    VkWriteDescriptorSet descriptorWrite{};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = descriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pImageInfo = &inputImageInfo;
+
+    VkDescriptorImageInfo outputImageInfo{};
     outputImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    outputImageInfo.imageView = outputImageView;
 
-    VkWriteDescriptorSet descriptorWrite[2] = {};
+    VkWriteDescriptorSet descriptorWriteOutput{};
+    descriptorWriteOutput.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWriteOutput.dstSet = descriptorSet;
+    descriptorWriteOutput.dstBinding = 1;
+    descriptorWriteOutput.dstArrayElement = 0;
+    descriptorWriteOutput.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    descriptorWriteOutput.descriptorCount = 1;
+    descriptorWriteOutput.pImageInfo = &outputImageInfo;
 
-    descriptorWrite[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite[0].dstSet = descriptorSet;
-    descriptorWrite[0].dstBinding = 0;
-    descriptorWrite[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    descriptorWrite[0].descriptorCount = 1;
-    descriptorWrite[0].pImageInfo = &inputImageInfo;
-
-    descriptorWrite[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite[1].dstSet = descriptorSet;
-    descriptorWrite[1].dstBinding = 1;
-    descriptorWrite[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    descriptorWrite[1].descriptorCount = 1;
-    descriptorWrite[1].pImageInfo = &outputImageInfo;
-
-    vkUpdateDescriptorSets(device, 2, descriptorWrite, 0, nullptr);
-}
+    VkWriteDescriptorSet descriptorWrites[] = { descriptorWrite, descriptorWriteOutput };
+    vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
 
 
-// Record command buffer
-void recordCommandBuffer(VkDevice device, VkCommandPool commandPool, VkPipeline computePipeline, VkPipelineLayout pipelineLayout, VkDescriptorSet descriptorSet, VkCommandBuffer& commandBuffer, VkExtent2D extent) {
-    // Allocate command buffer
-    VkCommandBufferAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
+    // Allocate and bind memory for buffers
 
-    if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate command buffer");
+    // Input Buffer
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &inputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create input buffer!");
     }
 
-    // Begin command buffer recording
-    VkCommandBufferBeginInfo beginInfo = {};
+    vkGetBufferMemoryRequirements(device, inputBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfoMem{};
+    allocInfoMem.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfoMem.allocationSize = memRequirements.size;
+    allocInfoMem.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, physicalDevice);
+
+    if (vkAllocateMemory(device, &allocInfoMem, nullptr, &inputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate input buffer memory!");
+    }
+
+    vkBindBufferMemory(device, inputBuffer, inputMemory, 0);
+
+    // Output Buffer
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &outputBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create output buffer!");
+    }
+
+    vkGetBufferMemoryRequirements(device, outputBuffer, &memRequirements);
+
+    allocInfoMem.allocationSize = memRequirements.size;
+    allocInfoMem.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, physicalDevice);
+
+    if (vkAllocateMemory(device, &allocInfoMem, nullptr, &outputMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate output buffer memory!");
+    }
+
+    vkBindBufferMemory(device, outputBuffer, outputMemory, 0);
+
+
+    // Copy the loaded image to Vulkan buffer (inputBuffer)
+    void* data;
+    vkMapMemory(device, inputMemory, 0, imageSize, 0, &data);
+    memcpy(data, pixels, static_cast<size_t>(imageSize));
+    vkUnmapMemory(device, inputMemory);
+
+    // Run the compute shader pipeline
+    // Setup code for dispatching the compute shader...
+    // Run the compute shader pipeline
+// Setup code for dispatching the compute shader...
+
+// Create a command pool
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = 0;  // Assuming the queue family index for the compute queue is 0
+    poolInfo.flags = 0;
+
+    VkCommandPool commandPool;
+    if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create command pool!");
+    }
+
+    // Allocate a command buffer
+    VkCommandBufferAllocateInfo allocInfoC{};
+    allocInfoC.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfoC.commandPool = commandPool;
+    allocInfoC.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfoC.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    if (vkAllocateCommandBuffers(device, &allocInfoC, &commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate command buffer!");
+    }
+
+    // Begin recording commands in the command buffer
+    VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to begin command buffer recording");
+        throw std::runtime_error("failed to begin recording command buffer!");
     }
 
-    // Bind compute pipeline and descriptor set
+    // Bind the compute pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+
+    // Bind the descriptor set
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
-    // Dispatch compute shader
-    vkCmdDispatch(commandBuffer, (extent.width + 15) / 16, (extent.height + 15) / 16, 1);
+    // Dispatch the compute shader
+    uint32_t groupCountX = (texWidth + 7) / 8;  // Assuming a workgroup size of 8x8
+    uint32_t groupCountY = (texHeight + 7) / 8;
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
-    // End command buffer recording
+    // End recording commands
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to end command buffer recording");
-    }
-}
-
-// Submit command buffer and synchronize
-void submitCommandBuffer(VkDevice device, VkQueue computeQueue, VkCommandBuffer commandBuffer) {
-    // Create a fence for synchronization
-    VkFenceCreateInfo fenceInfo = {};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    VkFence fence;
-    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create fence");
+        throw std::runtime_error("failed to record command buffer!");
     }
 
-    // Submit command buffer to queue
-    VkSubmitInfo submitInfo = {};
+    // Submit the command buffer to the queue
+    VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    if (vkQueueSubmit(computeQueue, 1, &submitInfo, fence) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to submit command buffer");
+    VkQueue computeQueue;
+    vkGetDeviceQueue(device, 0, 0, &computeQueue);  // Assuming queue family index 0 and queue index 0
+
+    if (vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        throw std::runtime_error("failed to submit compute command buffer!");
     }
 
-    // Wait for the fence to signal
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    // Wait for the queue to finish
+    vkQueueWaitIdle(computeQueue);
 
-    // HERE
-    /*vkMapMemory(device, outputBufferMemory, 0, sizeof(outputData), 0, &data);
-    memcpy(outputData.data(), data, sizeof(outputData));
-    vkUnmapMemory(device, outputBufferMemory);
-    saveImage("output.png", width, height, outputData.data());
-
-    stbi_image_free(imageData);*/
-
-
-    vkDestroyFence(device, fence, nullptr);
-}
-
-void saveImage(const std::string& filename, int width, int height, const unsigned char* data) {
-    stbi_write_png(filename.c_str(), width, height, 4, data, width * 4); // 4 bytes per pixel (RGBA)
-}
-// Main function
-int main() {
-    
-
-    VkInstance instance;
-    VkDevice device;
-    VkQueue computeQueue;
-    VkCommandPool commandPool;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline computePipeline;
-    VkDescriptorSetLayout descriptorSetLayout;
-
-    // Initialize Vulkan components
-    initVulkan(instance, device, computeQueue, commandPool, pipelineLayout, computePipeline, descriptorSetLayout);
-
-    // Image parameters
-    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkExtent2D extent = { 864, 409 };  // Example dimensions
-
-    VkImage inputImage, outputImage;
-    VkDeviceMemory inputImageMemory, outputImageMemory;
-    VkImageView inputImageView, outputImageView;
-
-    // Create input and output images
-    createImages(device, inputImage, outputImage, inputImageMemory, outputImageMemory, inputImageView, outputImageView, format, extent);
-
-    VkDescriptorSet descriptorSet;
-    VkDescriptorPool descriptorPool;
-
-    // Create descriptor sets
-    createDescriptorSets(device, descriptorPool, descriptorSetLayout, descriptorSet, inputImageView, outputImageView);
-
-    VkCommandBuffer commandBuffer;
-
-    // Record command buffer
-    recordCommandBuffer(device, commandPool, computePipeline, pipelineLayout, descriptorSet, commandBuffer, extent);
-
-    // Submit command buffer and synchronize
-    submitCommandBuffer(device, computeQueue, commandBuffer);
-    
-    
-    // Clean up Vulkan resources
-    vkDestroyImageView(device, outputImageView, nullptr);
-    vkDestroyImageView(device, inputImageView, nullptr);
-    vkDestroyImage(device, outputImage, nullptr);
-    vkDestroyImage(device, inputImage, nullptr);
-    vkFreeMemory(device, outputImageMemory, nullptr);
-    vkFreeMemory(device, inputImageMemory, nullptr);
-    vkDestroyPipeline(device, computePipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-    vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    // Cleanup command buffer and pool
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     vkDestroyCommandPool(device, commandPool, nullptr);
+
+
+    // Copy the output buffer to host-visible memory and save the image with stb_image_write
+    vkMapMemory(device, outputMemory, 0, imageSize, 0, &data);
+    stbi_write_png("output.png", texWidth, texHeight, STBI_rgb_alpha, data, texWidth * 4);
+    vkUnmapMemory(device, outputMemory);
+
+    // Cleanup Vulkan resources
+    vkDestroyShaderModule(device, shaderModule, nullptr);
+    vkDestroyBuffer(device, inputBuffer, nullptr);
+    vkDestroyBuffer(device, outputBuffer, nullptr);
+    vkFreeMemory(device, inputMemory, nullptr);
+    vkFreeMemory(device, outputMemory, nullptr);
     vkDestroyDevice(device, nullptr);
     vkDestroyInstance(instance, nullptr);
 
+    // Free the loaded image
+    stbi_image_free(pixels);
+
     return 0;
 }
+
