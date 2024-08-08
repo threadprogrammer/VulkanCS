@@ -1,6 +1,6 @@
 #version 450
 layout(binding = 0) uniform sampler2D inputImage;
-layout(binding = 1, rgba8) uniform image2D outputImage;
+layout(binding = 1) uniform writeonly image2D outputImage;
 
 void main() {
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);

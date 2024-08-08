@@ -51,6 +51,50 @@ uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties, V
     throw std::runtime_error("failed to find suitable memory type!");
 }
 
+void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags sourceStage;
+    VkPipelineStageFlags destinationStage;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+    else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    }
+    else {
+        throw std::invalid_argument("unsupported layout transition!");
+    }
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        sourceStage, destinationStage,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &barrier
+    );
+}
 
 // Main function
 int main() {
@@ -68,6 +112,10 @@ int main() {
     vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
 
     VkPhysicalDevice physicalDevice = physicalDevices[0];
+    if (physicalDevice == VK_NULL_HANDLE) {
+        throw std::runtime_error("failed to find a suitable GPU!");
+    }
+
     VkDevice device;
     float queuePriority = 1.0f;
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -80,7 +128,9 @@ int main() {
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-    vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device);
+    if (vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create device!");
+    }
 
     int texWidth, texHeight, texChannels;
     stbi_uc* pixels = stbi_load("input.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
@@ -124,7 +174,9 @@ int main() {
         throw std::runtime_error("failed to allocate input buffer memory!");
     }
 
-    vkBindBufferMemory(device, inputBuffer, inputMemory, 0);
+    if (vkBindBufferMemory(device, inputBuffer, inputMemory, 0) != VK_SUCCESS) {
+        throw std::runtime_error("failed to bind!");
+    }
 
     bufferInfoC.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
@@ -150,8 +202,9 @@ int main() {
         throw std::runtime_error("failed to allocate output buffer memory!");
     }
 
-    vkBindBufferMemory(device, outputBuffer, outputMemory, 0);
-
+    if (vkBindBufferMemory(device, outputBuffer, outputMemory, 0) != VK_SUCCESS) {
+        throw std::runtime_error("failed to bind!");
+    }
     auto shaderCode = readFile("image_shader.spv");
     VkShaderModule shaderModule = createShaderModule(device, shaderCode);
 
@@ -185,7 +238,10 @@ int main() {
         throw std::runtime_error("failed to allocate input image memory!");
     }
 
-    vkBindImageMemory(device, inputImage, inputMemory, 0);
+    if (vkBindImageMemory(device, inputImage, inputMemory, 0) != VK_SUCCESS) {
+        throw std::runtime_error("failed to bind!");
+    }
+
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -243,7 +299,9 @@ int main() {
         throw std::runtime_error("failed to allocate output image memory!");
     }
 
-    vkBindImageMemory(device, outputImage, outputMemory, 0);
+    if (vkBindImageMemory(device, outputImage, outputMemory, 0) != VK_SUCCESS) {
+        throw std::runtime_error("failed to bind!");
+    }
 
     // Create Image View for Output Image
     viewInfo.image = outputImage;
@@ -393,8 +451,6 @@ int main() {
         throw std::runtime_error("failed to allocate input buffer memory!");
     }
 
-    vkBindBufferMemory(device, inputBuffer, inputMemory, 0);
-
     // Output Buffer
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
 
@@ -409,12 +465,15 @@ int main() {
         throw std::runtime_error("failed to allocate output buffer memory!");
     }
 
-    vkBindBufferMemory(device, outputBuffer, outputMemory, 0);
-
     void* data;
-    vkMapMemory(device, inputMemory, 0, imageSize, 0, &data);
+    VkResult result = vkMapMemory(device, inputMemory, 0, imageSize, 0, &data);
+    if (result != VK_SUCCESS) {
+        std::cout << "Failed to map input memory." << std::endl;
+    }
     memcpy(data, pixels, static_cast<size_t>(imageSize));
     vkUnmapMemory(device, inputMemory);
+    stbi_write_png("semi1.png", texWidth, texHeight, STBI_rgb_alpha, data, texWidth * 4);
+
 
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -445,18 +504,21 @@ int main() {
         throw std::runtime_error("failed to begin recording command buffer!");
     }
 
+    transitionImageLayout(commandBuffer, inputImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(commandBuffer, outputImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
-    uint32_t groupCountX = (texWidth + 15) / 16;  // Assuming a workgroup size of 8x8
+    uint32_t groupCountX = (texWidth + 15) / 16;  // Assuming a workgroup size of 16x16
     uint32_t groupCountY = (texHeight + 15) / 16;
     vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to record command buffer!");
     }
-
+    std::cout << "Heeeelllllo" << std::endl;
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
@@ -469,12 +531,17 @@ int main() {
         throw std::runtime_error("failed to submit compute command buffer!");
     }
 
-    vkQueueWaitIdle(computeQueue);
+    if (vkQueueWaitIdle(computeQueue) != VK_SUCCESS) {
+        throw std::runtime_error("failed to idle queue!");
+    }
 
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     vkDestroyCommandPool(device, commandPool, nullptr);
 
-    vkMapMemory(device, outputMemory, 0, imageSize, 0, &data);
+    VkResult resultout = vkMapMemory(device, outputMemory, 0, imageSize, 0, &data);
+    if (resultout != VK_SUCCESS) {
+        std::cout << "Failed to map output memory." << std::endl;
+    }
     stbi_write_png("output.png", texWidth, texHeight, STBI_rgb_alpha, data, texWidth * 4);
     vkUnmapMemory(device, outputMemory);
 
@@ -490,4 +557,3 @@ int main() {
 
     return 0;
 }
-
