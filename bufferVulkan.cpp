@@ -388,8 +388,7 @@ int main() {
 
     endSingleTimeCommands(device, commandPool, graphicsQueue, commandBuffer);
 
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingBufferMemory, nullptr);
+    
 
     auto computeShaderCode = readFile("image_shader.spv");
     VkShaderModule computeShaderModule = createShaderModule(device, computeShaderCode);
@@ -438,9 +437,7 @@ int main() {
 
     endSingleTimeCommands(device, commandPool, graphicsQueue, computeCommandBuffer);
 
-    VkBuffer stagingBufferResult;
-    VkDeviceMemory stagingBufferMemoryResult;
-    createBuffer(device, physicalDevice, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBufferResult, stagingBufferMemoryResult);
+    createBuffer(device, physicalDevice, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
 
     VkCommandBuffer copyCommandBuffer = beginSingleTimeCommands(device, commandPool);
 
@@ -483,7 +480,7 @@ int main() {
         copyCommandBuffer,
         textureImage,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        stagingBufferResult,
+        stagingBuffer,
         1,
         &copyRegion
     );
@@ -505,12 +502,12 @@ int main() {
     endSingleTimeCommands(device, commandPool, graphicsQueue, copyCommandBuffer);
 
     void* resultData;
-    vkMapMemory(device, stagingBufferMemoryResult, 0, imageSize, 0, &resultData);
+    vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &resultData);
     stbi_write_png("output.png", texWidth, texHeight, STBI_rgb_alpha, resultData, texWidth * 4);
-    vkUnmapMemory(device, stagingBufferMemoryResult);
+    vkUnmapMemory(device, stagingBufferMemory);
 
-    vkDestroyBuffer(device, stagingBufferResult, nullptr);
-    vkFreeMemory(device, stagingBufferMemoryResult, nullptr);
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingBufferMemory, nullptr);
 
     vkDestroySampler(device, textureSampler, nullptr);
     vkDestroyImageView(device, textureImageView, nullptr);
