@@ -1,12 +1,9 @@
 #version 450
-
 layout(binding = 0) uniform sampler2D inputImage;
-layout(binding = 1, rgba8) writeonly uniform image2D outputImage;
-
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 1, rgba8) uniform image2D outputImage;
 
 void main() {
-    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec4 color = texture(inputImage, vec2(pos) / vec2(textureSize(inputImage, 0)));
-    imageStore(outputImage, pos, color * 2.0);  // Example operation: multiply color by 2
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    vec4 pixel = texelFetch(inputImage, coord, 0);
+    imageStore(outputImage, coord, pixel);
 }

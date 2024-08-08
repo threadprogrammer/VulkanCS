@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{0cee2a89-35d9-4b18-aaa1-b1aa235f47b0}</ProjectGuid>
-    <RootNamespace>imagebufferVulkan</RootNamespace>
+    <ProjectGuid>{d5941c6a-4fa3-48d7-ac07-a65513f10272}</ProjectGuid>
+    <RootNamespace>bufferVulkan</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -130,12 +130,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="imagebufferVulkan.cpp" />
-    <ClCompile Include="stb_image_write.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="stb_image.h" />
+    <ClCompile Include="bufferVulkan.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
 </Project>
