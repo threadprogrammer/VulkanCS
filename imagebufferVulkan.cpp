@@ -1,11 +1,10 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include <vulkan/vulkan.h>
 #include <iostream>
 #include <vector>
 #include <fstream>
 #include <stdexcept>
 #include <cstring>
+<<<<<<< HEAD
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -17,6 +16,14 @@ std::vector<uint32_t> readShaderCode(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) throw std::runtime_error("Failed to open file");
 
+=======
+
+// Function to read shader code from file
+std::vector<uint32_t> readShaderCode(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) throw std::runtime_error("Failed to open file");
+
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
     std::ifstream::pos_type fileSize = file.tellg();
     std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
     file.seekg(0);
@@ -26,6 +33,7 @@ std::vector<uint32_t> readShaderCode(const std::string& filename) {
     return buffer;
 }
 
+<<<<<<< HEAD
 bool loadImage(const std::string& filename, int& width, int& height, int& channels, unsigned char*& data) {
     data = stbi_load(filename.c_str(), &width, &height, &channels, STBI_rgb_alpha); // Force 4 channels (RGBA)
     if (!data) {
@@ -37,6 +45,8 @@ bool loadImage(const std::string& filename, int& width, int& height, int& channe
 
 
 
+=======
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
 // Initialize Vulkan instance, device, and other necessary components
 void initVulkan(VkInstance& instance, VkDevice& device, VkQueue& computeQueue, VkCommandPool& commandPool, VkPipelineLayout& pipelineLayout, VkPipeline& computePipeline, VkDescriptorSetLayout& descriptorSetLayout) {
     // Create Vulkan instance
@@ -203,6 +213,7 @@ void createImages(VkDevice device, VkImage& inputImage, VkImage& outputImage, Vk
     vkBindImageMemory(device, inputImage, inputImageMemory, 0);
     vkBindImageMemory(device, outputImage, outputImageMemory, 0);
 
+<<<<<<< HEAD
     //int width, height, channels;
     //width = 864;
     //width = 409;
@@ -217,6 +228,8 @@ void createImages(VkDevice device, VkImage& inputImage, VkImage& outputImage, Vk
     //memcpy(data, imageData.data(), sizeof(imageData));
     //vkUnmapMemory(device, inputImageMemory);
 
+=======
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
     // Create image views
     VkImageViewCreateInfo imageViewCreateInfo = {};
     imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -355,6 +368,7 @@ void submitCommandBuffer(VkDevice device, VkQueue computeQueue, VkCommandBuffer 
     // Wait for the fence to signal
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
+<<<<<<< HEAD
     // HERE
     /*vkMapMemory(device, outputBufferMemory, 0, sizeof(outputData), 0, &data);
     memcpy(outputData.data(), data, sizeof(outputData));
@@ -374,6 +388,13 @@ void saveImage(const std::string& filename, int width, int height, const unsigne
 int main() {
     
 
+=======
+    vkDestroyFence(device, fence, nullptr);
+}
+
+// Main function
+int main() {
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
     VkInstance instance;
     VkDevice device;
     VkQueue computeQueue;
@@ -387,7 +408,11 @@ int main() {
 
     // Image parameters
     VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
+<<<<<<< HEAD
     VkExtent2D extent = { 864, 409 };  // Example dimensions
+=======
+    VkExtent2D extent = { 1024, 768 };  // Example dimensions
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
 
     VkImage inputImage, outputImage;
     VkDeviceMemory inputImageMemory, outputImageMemory;
@@ -409,8 +434,12 @@ int main() {
 
     // Submit command buffer and synchronize
     submitCommandBuffer(device, computeQueue, commandBuffer);
+<<<<<<< HEAD
     
     
+=======
+
+>>>>>>> 96589a5410333478ccf3032e4330c6502f360079
     // Clean up Vulkan resources
     vkDestroyImageView(device, outputImageView, nullptr);
     vkDestroyImageView(device, inputImageView, nullptr);
